@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MMT Scan</title>
+<!--
+  MMT SCANNER
+
+  This page exists for one reason. Apps Script serves its web apps inside a
+  sandboxed iframe on an opaque googleusercontent.com origin, and browsers
+  refuse camera access from there no matter what the user taps. Google changed
+  this in February 2026 and it cannot be fixed from inside Apps Script.
+
+  So the camera lives out here instead, on an origin we control, where the
+  browser will allow it. All this page does is read a QR code and send the
+  browser on to the MMT app with the part number attached.
+
+  It holds nothing. No sheet access, no credentials, no API secret. If a
+  stranger found this page the worst they could do is scan their own QR codes.
+  The app itself is still locked to company Google accounts, so the redirect
+  lands them on a sign-in wall.
+-->
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0d0d0f; color: #fff;
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    padding: 14px 16px 10px; font-size: 17px; font-weight: 700;
+    letter-spacing: .5px; flex: 0 0 auto;
+  }
+  header span { color: #C8102E; }
+  #wrap { flex: 1 1 auto; position: relative; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; background: #000; display: block; }
+  /* The window the operator lines the label up in. */
+  #frame {
+    position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center; pointer-events: none;
+  }
+  #box {
+    width: 68vw; max-width: 320px; aspect-ratio: 1;
+    border: 3px solid rgba(255,255,255,.9); border-radius: 18px;
+    box-shadow: 0 0 0 100vmax rgba(0,0,0,.45);
+  }
+  #box.hit { border-color: #1e7e34; }
+  footer { flex: 0 0 auto; padding: 14px 16px 20px; }
+  #msg { text-align: center; font-size: 15px; min-height: 22px; margin-bottom: 10px; }
+  #msg b { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 19px; }
+  button, a.btn {
+    display: block; width: 100%; padding: 15px; font-size: 16px; font-weight: 600;
+    border: 0; border-radius: 10px; margin-top: 8px; text-align: center;
+    text-decoration: none; font-family: inherit;
+  }
+  .primary { background: #C8102E; color: #fff; }
+  .ghost { background: #2a2a30; color: #fff; }
+  .err {
+    background: #3a1a1a; border-left: 4px solid #C8102E; padding: 12px;
+    border-radius: 6px; font-size: 14px; line-height: 1.5; text-align: left;
+  }
+  input {
+    width: 100%; padding: 14px; font-size: 17px; border-radius: 10px;
+    border: 1px solid #444; background: #1a1a1f; color: #fff; margin-top: 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>MMT <span>SCAN</span></header>
+
+<div id="wrap">
+  <video id="vid" playsinline muted autoplay></video>
+  <canvas id="cv" class="hide"></canvas>
+  <div id="frame"><div id="box"></div></div>
+</div>
+
+<footer>
+  <div id="msg">Starting the camera...</div>
+  <div id="fallback" class="hide">
+    <input id="manual" inputmode="text" value="MMT-1" autocomplete="off">
+    <button class="primary" onclick="go(document.getElementById('manual').value)">Open it</button>
+  </div>
+  <a class="btn ghost" id="appLink" href="#">Back to the app</a>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// The one thing to set. Paste the MMT app deployment URL here - the AKfycbxWVR
+// one that is printed on the labels, NOT the machine API.
+// ---------------------------------------------------------------------------
+var APP_URL = 'https://script.google.com/a/macros/maurermachinetools.com.au/s/AKfycbxWVR-ggvEOvFWk3y73_TjXpD19T1D2SxfVNiUQ0FZ_SVTmIsiQVJQnOV5uJsq5VB1V/exec';
+// ---------------------------------------------------------------------------
+
+var $ = function (id) { return document.getElementById(id); };
+var stream = null, raf = null, sent = false;
+
+$('appLink').href = APP_URL;
+
+function go(text) {
+  if (sent) return;
+  var m = String(text || '').toUpperCase().match(/MMT-\d+/);
+  if (!m) {
+    $('msg').innerHTML = 'That is not an MMT part number.';
+    return;
+  }
+  sent = true;
+  stop();
+  $('box').classList.add('hit');
+  $('msg').innerHTML = 'Opening <b>' + m[0] + '</b>';
+  // Same tab, every time. This is the whole point - the phone camera app opens
+  // a new tab per scan and they pile up all day.
+  window.location.replace(APP_URL + '?part=' + encodeURIComponent(m[0]));
+}
+
+function stop() {
+  if (raf) { cancelAnimationFrame(raf); raf = null; }
+  if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+}
+
+function tick() {
+  var v = $('vid'), c = $('cv');
+  if (!stream) return;
+  if (v.readyState === v.HAVE_ENOUGH_DATA) {
+    // Read at a sane size. Full sensor resolution is slow on a tablet and no
+    // more accurate for a code this big in frame.
+    var w = 640, h = Math.round(v.videoHeight / v.videoWidth * 640) || 480;
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(v, 0, 0, w, h);
+    try {
+      var d = ctx.getImageData(0, 0, w, h);
+      var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'dontInvert' }) : null;
+      if (code && code.data) { go(code.data); return; }
+    } catch (e) { /* a dropped frame is nothing to stop for */ }
+  }
+  raf = requestAnimationFrame(tick);
+}
+
+function fail(title, detail) {
+  stop();
+  $('msg').innerHTML = '<div class="err"><b style="font-size:15px">' + title +
+                       '</b><br>' + detail + '</div>';
+  $('fallback').classList.remove('hide');
+}
+
+function start() {
+  if (APP_URL.indexOf('http') !== 0) {
+    fail('Not set up yet', 'APP_URL still needs the MMT app link pasted into it.');
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    fail('No camera here', 'This browser will not give a web page camera access. ' +
+         'Type the part number instead.');
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+    audio: false
+  }).then(function (s) {
+    stream = s;
+    var v = $('vid');
+    v.srcObject = s;
+    v.setAttribute('playsinline', true);
+    return v.play();
+  }).then(function () {
+    $('msg').innerHTML = 'Point at the label';
+    tick();
+  }).catch(function (e) {
+    var n = e && e.name ? e.name : '';
+    if (n === 'NotAllowedError') {
+      fail('Camera blocked',
+           'Allow the camera for this page: tap the padlock in the address bar, ' +
+           'then Permissions, then Camera, then Allow. Reload afterwards.');
+    } else if (n === 'NotFoundError' || n === 'OverconstrainedError') {
+      fail('No camera found', 'Nothing on this device reported a back camera.');
+    } else {
+      fail('Camera would not start', n || 'Unknown error.');
+    }
+  });
+}
+
+// Give back the camera when the tablet is put down, and pick it up again on
+// return. A stream left running flattens the battery and locks the camera out
+// of every other app.
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { stop(); }
+  else if (!sent && !stream) { start(); }
+});
+
+start();
+</script>
+</body>
+</html>

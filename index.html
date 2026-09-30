@@ -243,13 +243,13 @@ async function start() {
          'Type the part number instead.');
     return;
   }
-  try {
-    detector = await makeDetector();
-  } catch (e) {
-    fail('Reader would not load', 'The QR reader could not be downloaded. ' +
-         'Check the tablet is online, then reload.');
-    return;
-  }
+
+  // The reader is fetched WHILE the camera is starting, not before it. Waiting
+  // for one and then the other is why this page felt slow to open.
+  var ready = makeDetector().then(function (d) { detector = d; }).catch(function () {
+    detector = null;
+  });
+
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -265,6 +265,13 @@ async function start() {
     v.srcObject = stream;
     v.setAttribute('playsinline', true);
     await v.play();
+    $('msg').innerHTML = 'Starting the reader...';
+    await ready;
+    if (!detector) {
+      fail('Reader would not load', 'The QR reader could not be downloaded. ' +
+           'Check the tablet is online, then reload.');
+      return;
+    }
     $('msg').innerHTML = 'Point at the label';
     tick();
   } catch (e) {

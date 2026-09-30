@@ -47,14 +47,24 @@
     position: absolute; inset: 0; display: flex;
     align-items: center; justify-content: center; pointer-events: none;
   }
+  #picks { pointer-events: none; }
+  .pick { pointer-events: auto; }
   #box {
     width: 68vw; max-width: 320px; aspect-ratio: 1;
     border: 3px solid rgba(255,255,255,.9); border-radius: 18px;
     box-shadow: 0 0 0 100vmax rgba(0,0,0,.45);
   }
   #box.hit { border-color: #1e7e34; }
-  /* A code was read but it is outside the box, so it is being ignored. */
-  #box.near { border-color: #f5a623; }
+  /* With more than one label in view, a marker is put on each one and nothing
+     happens until one is tapped - guessing which was meant is worse. */
+  #picks { position: absolute; inset: 0; }
+  .pick {
+    position: absolute; transform: translate(-50%, -50%);
+    background: #C8102E; color: #fff; border: 3px solid #fff;
+    border-radius: 12px; padding: 10px 14px; font-size: 16px; font-weight: 700;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    box-shadow: 0 2px 10px rgba(0,0,0,.6); white-space: nowrap;
+  }
   footer { flex: 0 0 auto; padding: 14px 16px 20px; }
   #msg { text-align: center; font-size: 15px; min-height: 22px; margin-bottom: 10px; }
   #msg b { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 19px; }
@@ -85,6 +95,7 @@
   <video id="vid" playsinline muted autoplay></video>
   <canvas id="cv" class="hide"></canvas>
   <div id="frame"><div id="box"></div></div>
+  <div id="picks"></div>
 </div>
 
 <footer>
@@ -132,37 +143,66 @@ function stop() {
   if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
 }
 
-// Is the code lined up in the box?
+// Where a code sits on screen.
 //
-// The box was only ever painted on before - the reader looked at the whole
-// frame, so standing in front of a shelf it took whichever label it happened
-// to see first. This works out where the code actually sits on screen and
-// ignores anything whose middle is outside the box.
-function inBox(loc, cw, ch) {
-  if (!loc) return true;
-  var v = $('vid'), wrap = $('wrap'), box = $('box');
+// The reader works on a small copy of the frame, and the video is cropped to
+// fill the window, so the same maths the browser uses for object-fit: cover is
+// needed to put a marker in the right place.
+function onScreen(loc, cw, ch) {
+  var v = $('vid'), wrap = $('wrap');
   var vw = v.videoWidth, vh = v.videoHeight;
-  if (!vw || !vh) return true;
-
-  // Middle of the code, in the small image the reader was given.
   var cx = (loc.topLeftCorner.x + loc.topRightCorner.x +
             loc.bottomLeftCorner.x + loc.bottomRightCorner.x) / 4;
   var cy = (loc.topLeftCorner.y + loc.topRightCorner.y +
             loc.bottomLeftCorner.y + loc.bottomRightCorner.y) / 4;
-
-  // Same point in the full camera frame.
   var fx = cx * (vw / cw), fy = cy * (vh / ch);
-
-  // And where that lands on screen. The video is cropped to fill the window,
-  // so the same maths the browser uses for object-fit: cover is needed here.
   var W = wrap.clientWidth, H = wrap.clientHeight;
   var scale = Math.max(W / vw, H / vh);
-  var sx = fx * scale + (W - vw * scale) / 2;
-  var sy = fy * scale + (H - vh * scale) / 2;
+  return { x: fx * scale + (W - vw * scale) / 2,
+           y: fy * scale + (H - vh * scale) / 2 };
+}
 
-  var b = box.getBoundingClientRect(), w = wrap.getBoundingClientRect();
-  var bx = b.left - w.left, by = b.top - w.top;
-  return sx >= bx && sx <= bx + b.width && sy >= by && sy <= by + b.height;
+// jsQR only ever returns one code per picture. So it is run, the code it found
+// is painted over, and it is run again - until nothing is left. That is how
+// several labels in one shot are found.
+function readAll(ctx, w, h) {
+  var out = [];
+  for (var pass = 0; pass < 6; pass++) {
+    var d = ctx.getImageData(0, 0, w, h);
+    var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'dontInvert' }) : null;
+    if (!code || !code.data) break;
+    var m = String(code.data).toUpperCase().match(/MMT-\d+/);
+    var l = code.location;
+    var xs = [l.topLeftCorner.x, l.topRightCorner.x, l.bottomLeftCorner.x, l.bottomRightCorner.x];
+    var ys = [l.topLeftCorner.y, l.topRightCorner.y, l.bottomLeftCorner.y, l.bottomRightCorner.y];
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    if (m && !out.some(function (o) { return o.pn === m[0]; })) {
+      out.push({ pn: m[0], loc: l });
+    }
+    // Paint it out, with a margin, so the next pass finds a different one.
+    var pad = 6;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x0 - pad, y0 - pad, (x1 - x0) + pad * 2, (y1 - y0) + pad * 2);
+  }
+  return out;
+}
+
+function clearPicks() { $('picks').innerHTML = ''; }
+
+function showPicks(list, cw, ch) {
+  var box = $('picks');
+  box.innerHTML = '';
+  list.forEach(function (c) {
+    var p = onScreen(c.loc, cw, ch);
+    var el = document.createElement('div');
+    el.className = 'pick';
+    el.style.left = p.x + 'px';
+    el.style.top = p.y + 'px';
+    el.textContent = c.pn;
+    el.addEventListener('click', function () { go(c.pn); });
+    box.appendChild(el);
+  });
 }
 
 function tick() {
@@ -176,15 +216,15 @@ function tick() {
     var ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(v, 0, 0, w, h);
     try {
-      var d = ctx.getImageData(0, 0, w, h);
-      var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'dontInvert' }) : null;
-      if (code && code.data) {
-        if (inBox(code.location, w, h)) { go(code.data); return; }
-        // Seen, but not the one being aimed at.
-        $('box').classList.add('near');
-        $('msg').innerHTML = 'Line the label up inside the box';
+      var found = readAll(ctx, w, h);
+      if (found.length === 1) { go(found[0].pn); return; }
+      if (found.length > 1) {
+        $('box').style.opacity = '0';
+        showPicks(found, w, h);
+        $('msg').innerHTML = found.length + ' labels - tap the one you want';
       } else {
-        $('box').classList.remove('near');
+        clearPicks();
+        $('box').style.opacity = '';
         $('msg').innerHTML = 'Point at the label';
       }
     } catch (e) { /* a dropped frame is nothing to stop for */ }

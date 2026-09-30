@@ -50,9 +50,8 @@
   #picks { pointer-events: none; }
   .pick { pointer-events: auto; }
   #box {
-    width: 68vw; max-width: 320px; aspect-ratio: 1;
-    border: 3px solid rgba(255,255,255,.9); border-radius: 18px;
-    box-shadow: 0 0 0 100vmax rgba(0,0,0,.45);
+    width: 82vw; max-width: 420px; aspect-ratio: 1;
+    border: 2px dashed rgba(255,255,255,.35); border-radius: 18px;
   }
   #box.hit { border-color: #1e7e34; }
   /* With more than one label in view, a marker is put on each one and nothing
@@ -61,10 +60,11 @@
   .pick {
     position: absolute; transform: translate(-50%, -50%);
     background: #C8102E; color: #fff; border: 3px solid #fff;
-    border-radius: 12px; padding: 10px 14px; font-size: 16px; font-weight: 700;
+    border-radius: 12px; padding: 14px 18px; font-size: 18px; font-weight: 700;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     box-shadow: 0 2px 10px rgba(0,0,0,.6); white-space: nowrap;
   }
+  .pick:active { background: #1e7e34; }
   footer { flex: 0 0 auto; padding: 14px 16px 20px; }
   #msg { text-align: center; font-size: 15px; min-height: 22px; margin-bottom: 10px; }
   #msg b { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 19px; }
@@ -194,11 +194,15 @@ async function tick() {
           found.push({ pn: m[0], box: c.boundingBox });
         }
       });
-      if (found.length === 1) { go(found[0].pn); return; }
-      if (found.length > 1) {
+      // Nothing opens by itself. Every label it can see gets a tag and it
+      // waits to be told which one - one label or ten, it behaves the same,
+      // so there is never a scan that runs away before it can be stopped.
+      if (found.length) {
         $('box').style.opacity = '0';
         showPicks(found);
-        $('msg').innerHTML = found.length + ' labels - tap the one you want';
+        $('msg').innerHTML = found.length === 1
+          ? 'Tap the part number to open it'
+          : found.length + ' labels - tap the one you want';
       } else {
         clearPicks();
         $('box').style.opacity = '';

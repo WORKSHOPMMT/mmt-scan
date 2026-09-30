@@ -53,6 +53,8 @@
     box-shadow: 0 0 0 100vmax rgba(0,0,0,.45);
   }
   #box.hit { border-color: #1e7e34; }
+  /* A code was read but it is outside the box, so it is being ignored. */
+  #box.near { border-color: #f5a623; }
   footer { flex: 0 0 auto; padding: 14px 16px 20px; }
   #msg { text-align: center; font-size: 15px; min-height: 22px; margin-bottom: 10px; }
   #msg b { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 19px; }
@@ -117,6 +119,7 @@ function go(text) {
   }
   sent = true;
   stop();
+  $('box').classList.remove('near');
   $('box').classList.add('hit');
   $('msg').innerHTML = 'Opening <b>' + m[0] + '</b>';
   // Same tab, every time. This is the whole point - the phone camera app opens
@@ -127,6 +130,39 @@ function go(text) {
 function stop() {
   if (raf) { cancelAnimationFrame(raf); raf = null; }
   if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+}
+
+// Is the code lined up in the box?
+//
+// The box was only ever painted on before - the reader looked at the whole
+// frame, so standing in front of a shelf it took whichever label it happened
+// to see first. This works out where the code actually sits on screen and
+// ignores anything whose middle is outside the box.
+function inBox(loc, cw, ch) {
+  if (!loc) return true;
+  var v = $('vid'), wrap = $('wrap'), box = $('box');
+  var vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw || !vh) return true;
+
+  // Middle of the code, in the small image the reader was given.
+  var cx = (loc.topLeftCorner.x + loc.topRightCorner.x +
+            loc.bottomLeftCorner.x + loc.bottomRightCorner.x) / 4;
+  var cy = (loc.topLeftCorner.y + loc.topRightCorner.y +
+            loc.bottomLeftCorner.y + loc.bottomRightCorner.y) / 4;
+
+  // Same point in the full camera frame.
+  var fx = cx * (vw / cw), fy = cy * (vh / ch);
+
+  // And where that lands on screen. The video is cropped to fill the window,
+  // so the same maths the browser uses for object-fit: cover is needed here.
+  var W = wrap.clientWidth, H = wrap.clientHeight;
+  var scale = Math.max(W / vw, H / vh);
+  var sx = fx * scale + (W - vw * scale) / 2;
+  var sy = fy * scale + (H - vh * scale) / 2;
+
+  var b = box.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+  var bx = b.left - w.left, by = b.top - w.top;
+  return sx >= bx && sx <= bx + b.width && sy >= by && sy <= by + b.height;
 }
 
 function tick() {
@@ -142,7 +178,15 @@ function tick() {
     try {
       var d = ctx.getImageData(0, 0, w, h);
       var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'dontInvert' }) : null;
-      if (code && code.data) { go(code.data); return; }
+      if (code && code.data) {
+        if (inBox(code.location, w, h)) { go(code.data); return; }
+        // Seen, but not the one being aimed at.
+        $('box').classList.add('near');
+        $('msg').innerHTML = 'Line the label up inside the box';
+      } else {
+        $('box').classList.remove('near');
+        $('msg').innerHTML = 'Point at the label';
+      }
     } catch (e) { /* a dropped frame is nothing to stop for */ }
   }
   raf = requestAnimationFrame(tick);

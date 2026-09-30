@@ -107,134 +107,97 @@
   <a class="btn ghost" id="appLink" href="#">Back to the app</a>
 </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-<script>
+<script type="module">
 // ---------------------------------------------------------------------------
 // The one thing to set. Paste the MMT app deployment URL here - the AKfycbxWVR
 // one that is printed on the labels, NOT the machine API.
 // ---------------------------------------------------------------------------
 var APP_URL = 'https://script.google.com/a/macros/maurermachinetools.com.au/s/AKfycbxWVR-ggvEOvFWk3y73_TjXpD19T1D2SxfVNiUQ0FZ_SVTmIsiQVJQnOV5uJsq5VB1V/exec';
 // ---------------------------------------------------------------------------
+//
+// The reader used to be jsQR, which is pure JavaScript and slow - measured at
+// roughly 350 ms for a single frame where the WebAssembly readers take under
+// 10 ms, with occasional frames far worse than that. That is what made labels
+// hard to pick up.
+//
+// It also only ever found one code per picture, so finding several meant
+// reading, painting the code out, and reading again - several times a frame,
+// on the slowest reader available.
+//
+// This uses the browser's own reader where there is one, and falls back to
+// ZXing compiled to WebAssembly where there is not. Both hand back EVERY code
+// in the frame along with where it sits, so picking between labels is free.
 
 var $ = function (id) { return document.getElementById(id); };
-var stream = null, raf = null, sent = false;
+var stream = null, timer = null, sent = false, detector = null;
 
 $('appLink').href = APP_URL;
 
 function go(text) {
   if (sent) return;
   var m = String(text || '').toUpperCase().match(/MMT-\d+/);
-  if (!m) {
-    $('msg').innerHTML = 'That is not an MMT part number.';
-    return;
-  }
+  if (!m) { $('msg').innerHTML = 'That is not an MMT part number.'; return; }
   sent = true;
   stop();
-  $('box').classList.remove('near');
   $('box').classList.add('hit');
   $('msg').innerHTML = 'Opening <b>' + m[0] + '</b>';
   // Same tab, every time. This is the whole point - the phone camera app opens
   // a new tab per scan and they pile up all day.
   window.location.replace(APP_URL + '?part=' + encodeURIComponent(m[0]));
 }
+window.go = go;
 
 function stop() {
-  if (raf) { cancelAnimationFrame(raf); raf = null; }
+  if (timer) { clearTimeout(timer); timer = null; }
   if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
 }
 
-// Where a code sits on screen.
-//
-// The reader works on a small copy of the frame, and the video is cropped to
-// fill the window, so the same maths the browser uses for object-fit: cover is
-// needed to put a marker in the right place.
-function onScreen(loc, cw, ch) {
+// Where a code sits on screen. The video is cropped to fill the window, so the
+// same maths the browser uses for object-fit: cover is needed to put a marker
+// in the right place.
+function onScreen(box) {
   var v = $('vid'), wrap = $('wrap');
   var vw = v.videoWidth, vh = v.videoHeight;
-  var cx = (loc.topLeftCorner.x + loc.topRightCorner.x +
-            loc.bottomLeftCorner.x + loc.bottomRightCorner.x) / 4;
-  var cy = (loc.topLeftCorner.y + loc.topRightCorner.y +
-            loc.bottomLeftCorner.y + loc.bottomRightCorner.y) / 4;
-  var fx = cx * (vw / cw), fy = cy * (vh / ch);
   var W = wrap.clientWidth, H = wrap.clientHeight;
   var scale = Math.max(W / vw, H / vh);
-  return { x: fx * scale + (W - vw * scale) / 2,
-           y: fy * scale + (H - vh * scale) / 2 };
-}
-
-// jsQR only ever returns one code per picture. So it is run, the code it found
-// is painted over, and it is run again - until nothing is left. That is how
-// several labels in one shot are found.
-//
-// Every pass costs time, and reading six of them on every frame made the thing
-// sluggish to pick up anything at all. So it stops after two unless a second
-// code actually turns up, which is the only time the rest are needed.
-function readAll(ctx, w, h, maxPasses) {
-  var out = [];
-  for (var pass = 0; pass < (maxPasses || 2); pass++) {
-    var d = ctx.getImageData(0, 0, w, h);
-    var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'attemptBoth' }) : null;
-    if (!code || !code.data) break;
-    var m = String(code.data).toUpperCase().match(/MMT-\d+/);
-    var l = code.location;
-    var xs = [l.topLeftCorner.x, l.topRightCorner.x, l.bottomLeftCorner.x, l.bottomRightCorner.x];
-    var ys = [l.topLeftCorner.y, l.topRightCorner.y, l.bottomLeftCorner.y, l.bottomRightCorner.y];
-    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
-    var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
-    if (m && !out.some(function (o) { return o.pn === m[0]; })) {
-      out.push({ pn: m[0], loc: l });
-    }
-    // Paint it out, with a margin, so the next pass finds a different one.
-    var pad = 6;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(x0 - pad, y0 - pad, (x1 - x0) + pad * 2, (y1 - y0) + pad * 2);
-  }
-  return out;
+  return { x: (box.x + box.width / 2) * scale + (W - vw * scale) / 2,
+           y: (box.y + box.height / 2) * scale + (H - vh * scale) / 2 };
 }
 
 function clearPicks() { $('picks').innerHTML = ''; }
 
-function showPicks(list, cw, ch) {
-  var box = $('picks');
-  box.innerHTML = '';
+function showPicks(list) {
+  var holder = $('picks');
+  holder.innerHTML = '';
   list.forEach(function (c) {
-    var p = onScreen(c.loc, cw, ch);
+    var p = onScreen(c.box);
     var el = document.createElement('div');
     el.className = 'pick';
     el.style.left = p.x + 'px';
     el.style.top = p.y + 'px';
     el.textContent = c.pn;
     el.addEventListener('click', function () { go(c.pn); });
-    box.appendChild(el);
+    holder.appendChild(el);
   });
 }
 
-function tick() {
-  var v = $('vid'), c = $('cv');
-  if (!stream) return;
+async function tick() {
+  if (!stream || sent) return;
+  var v = $('vid');
   if (v.readyState === v.HAVE_ENOUGH_DATA) {
-    // Read at a sane size. Full sensor resolution is slow on a tablet and no
-    // more accurate for a code this big in frame.
-    // A bigger picture reads a label from further away. 640 was too small for
-    // a bin label at arm's length.
-    var w = 960, h = Math.round(v.videoHeight / v.videoWidth * 960) || 720;
-    c.width = w; c.height = h;
-    var ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(v, 0, 0, w, h);
     try {
-      // Two passes: enough to tell one label from several, and quick enough to
-      // keep up with the camera.
-      var found = readAll(ctx, w, h, 2);
-      if (found.length === 1) { go(found[0].pn); return; }
-      if (found.length > 1) {
-        // Now it is worth looking properly for the rest.
-        ctx.drawImage(v, 0, 0, w, h);
-        found = readAll(ctx, w, h, 6);
-      }
+      var codes = await detector.detect(v);
+      var found = [];
+      codes.forEach(function (c) {
+        var m = String(c.rawValue || '').toUpperCase().match(/MMT-\d+/);
+        if (m && !found.some(function (f) { return f.pn === m[0]; })) {
+          found.push({ pn: m[0], box: c.boundingBox });
+        }
+      });
       if (found.length === 1) { go(found[0].pn); return; }
       if (found.length > 1) {
         $('box').style.opacity = '0';
-        showPicks(found, w, h);
+        showPicks(found);
         $('msg').innerHTML = found.length + ' labels - tap the one you want';
       } else {
         clearPicks();
@@ -243,7 +206,7 @@ function tick() {
       }
     } catch (e) { /* a dropped frame is nothing to stop for */ }
   }
-  raf = requestAnimationFrame(tick);
+  timer = setTimeout(tick, 100);
 }
 
 function fail(title, detail) {
@@ -253,7 +216,20 @@ function fail(title, detail) {
   $('fallback').classList.remove('hide');
 }
 
-function start() {
+async function makeDetector() {
+  if ('BarcodeDetector' in window) {
+    try {
+      var formats = await window.BarcodeDetector.getSupportedFormats();
+      if (formats.indexOf('qr_code') >= 0) {
+        return new window.BarcodeDetector({ formats: ['qr_code'] });
+      }
+    } catch (e) { /* fall through to the WebAssembly one */ }
+  }
+  var mod = await import('https://cdn.jsdelivr.net/npm/barcode-detector@2/dist/es/pure.min.js');
+  return new mod.BarcodeDetector({ formats: ['qr_code'] });
+}
+
+async function start() {
   if (APP_URL.indexOf('http') !== 0) {
     fail('Not set up yet', 'APP_URL still needs the MMT app link pasted into it.');
     return;
@@ -263,26 +239,31 @@ function start() {
          'Type the part number instead.');
     return;
   }
-  navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      // Keep it focusing. A fixed focus is why a label has to be held at
-      // exactly the right distance to be read.
-      advanced: [{ focusMode: 'continuous' }]
-    },
-    audio: false
-  }).then(function (s) {
-    stream = s;
+  try {
+    detector = await makeDetector();
+  } catch (e) {
+    fail('Reader would not load', 'The QR reader could not be downloaded. ' +
+         'Check the tablet is online, then reload.');
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        // Keep it focusing. A fixed focus is why a label has to be held at
+        // exactly the right distance to be read.
+        advanced: [{ focusMode: 'continuous' }]
+      },
+      audio: false
+    });
     var v = $('vid');
-    v.srcObject = s;
+    v.srcObject = stream;
     v.setAttribute('playsinline', true);
-    return v.play();
-  }).then(function () {
+    await v.play();
     $('msg').innerHTML = 'Point at the label';
     tick();
-  }).catch(function (e) {
+  } catch (e) {
     var n = e && e.name ? e.name : '';
     if (n === 'NotAllowedError') {
       fail('Camera blocked',
@@ -293,7 +274,7 @@ function start() {
     } else {
       fail('Camera would not start', n || 'Unknown error.');
     }
-  });
+  }
 }
 
 // Give back the camera when the tablet is put down, and pick it up again on

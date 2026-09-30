@@ -165,11 +165,15 @@ function onScreen(loc, cw, ch) {
 // jsQR only ever returns one code per picture. So it is run, the code it found
 // is painted over, and it is run again - until nothing is left. That is how
 // several labels in one shot are found.
-function readAll(ctx, w, h) {
+//
+// Every pass costs time, and reading six of them on every frame made the thing
+// sluggish to pick up anything at all. So it stops after two unless a second
+// code actually turns up, which is the only time the rest are needed.
+function readAll(ctx, w, h, maxPasses) {
   var out = [];
-  for (var pass = 0; pass < 6; pass++) {
+  for (var pass = 0; pass < (maxPasses || 2); pass++) {
     var d = ctx.getImageData(0, 0, w, h);
-    var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'dontInvert' }) : null;
+    var code = window.jsQR ? window.jsQR(d.data, w, h, { inversionAttempts: 'attemptBoth' }) : null;
     if (!code || !code.data) break;
     var m = String(code.data).toUpperCase().match(/MMT-\d+/);
     var l = code.location;
@@ -211,12 +215,22 @@ function tick() {
   if (v.readyState === v.HAVE_ENOUGH_DATA) {
     // Read at a sane size. Full sensor resolution is slow on a tablet and no
     // more accurate for a code this big in frame.
-    var w = 640, h = Math.round(v.videoHeight / v.videoWidth * 640) || 480;
+    // A bigger picture reads a label from further away. 640 was too small for
+    // a bin label at arm's length.
+    var w = 960, h = Math.round(v.videoHeight / v.videoWidth * 960) || 720;
     c.width = w; c.height = h;
     var ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(v, 0, 0, w, h);
     try {
-      var found = readAll(ctx, w, h);
+      // Two passes: enough to tell one label from several, and quick enough to
+      // keep up with the camera.
+      var found = readAll(ctx, w, h, 2);
+      if (found.length === 1) { go(found[0].pn); return; }
+      if (found.length > 1) {
+        // Now it is worth looking properly for the rest.
+        ctx.drawImage(v, 0, 0, w, h);
+        found = readAll(ctx, w, h, 6);
+      }
       if (found.length === 1) { go(found[0].pn); return; }
       if (found.length > 1) {
         $('box').style.opacity = '0';
@@ -250,7 +264,14 @@ function start() {
     return;
   }
   navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      // Keep it focusing. A fixed focus is why a label has to be held at
+      // exactly the right distance to be read.
+      advanced: [{ focusMode: 'continuous' }]
+    },
     audio: false
   }).then(function (s) {
     stream = s;

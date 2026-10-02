@@ -229,7 +229,7 @@ async function makeDetector() {
       }
     } catch (e) { /* fall through to the WebAssembly one */ }
   }
-  var mod = await import('https://cdn.jsdelivr.net/npm/barcode-detector@2/dist/es/pure.min.js');
+  var mod = await import('https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.min.js');
   return new mod.BarcodeDetector({ formats: ['qr_code'] });
 }
 
